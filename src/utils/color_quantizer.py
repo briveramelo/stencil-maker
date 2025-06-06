@@ -1,28 +1,33 @@
 from pathlib import Path
-
-import numpy as np
+from typing import Tuple
 from PIL import Image
+import numpy as np
+
+RGBA = tuple[int, int, int, int]
 
 
-def quantize_image(img_path: Path, k: int):
+def quantize_image(img_path: Path, k: int) -> Tuple[Image.Image, list[RGBA]]:
     """
-    Load *img_path*, convert to RGBA, and Pillow-quantize it
-    to **≤ k** distinct colours (with dithering off).
-
-    Returns
-    -------
-    img_q   : PIL.Image.Image – the quantised image (mode 'P')
-    palette : list[tuple[int, int, int, int]] – RGBA colours actually used
+    Load *img_path*, convert to RGBA, quantize to ≤k colours, return:
+      - the quantized image in mode 'P'
+      - the RGBA palette as a list of used colours (w/ real alpha)
     """
-    img = Image.open(img_path).convert("RGBA")
-    img_q = img.quantize(colors=k, method=Image.MEDIANCUT, dither=Image.NONE)
+    img_rgba: Image.Image = Image.open(img_path).convert("RGBA")
+    img_q: Image.Image = img_rgba.quantize(colors=k, method=Image.MEDIANCUT, dither=Image.NONE)
 
-    # Pillow stores the palette as an RGB array – extract only colours present
-    pal = img_q.getpalette()  # flat list length 768
-    full_rgba = [
-        (*pal[i: i + 3], 255)  # alpha full-opaque; PNG has original alpha in mask
-        for i in range(0, len(pal), 3)
-    ]
-    used_idxs = sorted(set(np.array(img_q)))
-    palette = [full_rgba[i] for i in used_idxs]
+    pal = img_q.getpalette()
+    full_rgb: list[tuple[int, int, int]] = [tuple(pal[i:i+3]) for i in range(0, len(pal), 3)]
+
+    index_map = np.array(img_q)
+    alpha_map = np.array(img_rgba.getchannel("A"))
+
+    idx_to_alpha: dict[int, int] = {}
+    for idx in np.unique(index_map):
+        alpha_vals = alpha_map[index_map == idx]
+        avg_alpha = int(np.mean(alpha_vals)) if alpha_vals.size > 0 else 255
+        idx_to_alpha[idx] = avg_alpha
+
+    used_idxs = sorted(set(index_map.flatten()))
+    palette: list[RGBA] = [(*full_rgb[i], idx_to_alpha.get(i, 255)) for i in used_idxs]
+
     return img_q, palette
