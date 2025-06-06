@@ -20,7 +20,7 @@ def quantize_image(img_path: Path, k: int):
     # Pillow stores the palette as an RGB array – extract only colours present
     pal = img_q.getpalette()  # flat list length 768
     full_rgba = [
-        (*pal[i : i + 3], 255)  # alpha full-opaque; PNG has original alpha in mask
+        (*pal[i: i + 3], 255)  # alpha full-opaque; PNG has original alpha in mask
         for i in range(0, len(pal), 3)
     ]
     used_idxs = sorted(set(np.array(img_q)))

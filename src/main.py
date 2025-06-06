@@ -1,6 +1,6 @@
 from pathlib import Path
 import typer
-from src.utils.color_quantization import quantize_image
+from src.utils.color_quantizer import quantize_image
 from src.utils.mask_builder import masks_from_quantized
 from src.utils.svg_exporter import masks_to_svgs
 from src.utils.utils import ensure_out_dir
