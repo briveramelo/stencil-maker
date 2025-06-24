@@ -37,7 +37,7 @@ if __name__ == "__main__":  # pragma: no cover
             input_path=Path(input_path),
             output_dir=output_dir,
             max_colors=4,
-            scale=1,
+            scale=10,
         )
         total += 1
 
