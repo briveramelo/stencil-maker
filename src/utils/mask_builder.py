@@ -2,7 +2,7 @@ import numpy as np
 from PIL import Image
 
 
-def masks_from_quantized(img_q: Image.Image, palette: list[tuple[int, int, int, int]]):
+def masks_from_quantized(img_q: Image.Image):
     """
     For each colour index actually used, build a **bool ndarray mask**.
 

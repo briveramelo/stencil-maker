@@ -2,8 +2,9 @@ from pathlib import Path
 from typing import Tuple
 from PIL import Image
 import numpy as np
+from PIL.Image import Quantize, Dither
 
-RGBA = tuple[int, int, int, int]
+from src.models.models import RGBA, RGB
 
 
 def quantize_image(img_path: Path, k: int) -> Tuple[Image.Image, list[RGBA]]:
@@ -12,22 +13,30 @@ def quantize_image(img_path: Path, k: int) -> Tuple[Image.Image, list[RGBA]]:
       - the quantized image in mode 'P'
       - the RGBA palette as a list of used colours (w/ real alpha)
     """
-    img_rgba: Image.Image = Image.open(img_path).convert("RGBA")
-    img_q: Image.Image = img_rgba.quantize(colors=k, method=Image.MEDIANCUT, dither=Image.NONE)
+    img_rgba = Image.open(img_path).convert("RGBA")
+    img_q = img_rgba.quantize(colors=k, method=Quantize.FASTOCTREE, dither=Dither.NONE)
 
-    pal = img_q.getpalette()
-    full_rgb: list[tuple[int, int, int]] = [tuple(pal[i:i+3]) for i in range(0, len(pal), 3)]
+    # 1) Grab the *raw* palette (flat list of ints), assert it's present
+    raw_palette = img_q.getpalette()
+    if raw_palette is None:
+        raise RuntimeError("Expected a palette on quantized image, but got None")
 
+    # 2) Chunk into RGB triplets
+    full_rgb: list[RGB] = [(raw_palette[i], raw_palette[i + 1], raw_palette[i + 2]) for i in range(int(len(raw_palette) / 3))]
+
+    # 3) Build an index→alpha map from the original RGBA image
     index_map = np.array(img_q)
     alpha_map = np.array(img_rgba.getchannel("A"))
 
     idx_to_alpha: dict[int, int] = {}
     for idx in np.unique(index_map):
-        alpha_vals = alpha_map[index_map == idx]
-        avg_alpha = int(np.mean(alpha_vals)) if alpha_vals.size > 0 else 255
-        idx_to_alpha[idx] = avg_alpha
+        alphas = alpha_map[index_map == idx]
+        idx_to_alpha[idx] = int(alphas.mean()) if alphas.size > 0 else 255
 
-    used_idxs = sorted(set(index_map.flatten()))
-    palette: list[RGBA] = [(*full_rgb[i], idx_to_alpha.get(i, 255)) for i in used_idxs]
+    # 4) Only keep the indices actually used in the image
+    used_indexes = sorted(set(index_map.flatten()))
 
-    return img_q, palette
+    # 5) Build your final RGBA palette list
+    rgba_palette: list[RGBA] = [(full_rgb[i][0], full_rgb[i][1], full_rgb[i][2], idx_to_alpha.get(i, 255)) for i in used_indexes]
+
+    return img_q, rgba_palette
