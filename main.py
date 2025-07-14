@@ -4,12 +4,14 @@ from src.utils.color_quantizer import quantize_image
 from src.utils.mask_builder import masks_from_quantized
 from src.utils.svg_exporter import masks_to_svgs
 from src.utils.utils import ensure_out_dir
+from src.models import POKEMON_NAMES
 
 
 def make_stencils(
     *,
     input_path: Path,
     output_dir: Path,
+    base_filename: str,
     max_colors: int,
     scale: int,
 ):
@@ -21,7 +23,7 @@ def make_stencils(
     typer.secho(f"Creating masks", fg=typer.colors.WHITE)
     masks = masks_from_quantized(img_quant)
     typer.secho(f"Creating SVGS", fg=typer.colors.WHITE)
-    masks_to_svgs(masks, palette, output_dir, scale)
+    masks_to_svgs(masks, palette, output_dir, scale, base_filename)
     typer.secho(f"✅  Wrote {len(palette)} SVG layer(s) to «{output_dir}»", fg=typer.colors.GREEN)
 
 
@@ -32,10 +34,14 @@ if __name__ == "__main__":  # pragma: no cover
     for i, input_path in enumerate(input_dir.glob("*.png")):
         typer.secho(f"Making stencils for #{i+1}")
         file_stem = input_path.stem
-        output_dir = Path(f"./art/pokemon-gold/svgs/{file_stem}")
+        num = int(file_stem.split("_")[-1])
+        name = POKEMON_NAMES.get(num, f"pokemon{num}")
+        base_filename = f"{num:03}_{name}"
+        output_dir = Path(f"./art/pokemon-gold/svgs/{base_filename}")
         make_stencils(
             input_path=Path(input_path),
             output_dir=output_dir,
+            base_filename=base_filename,
             max_colors=4,
             scale=10,
         )

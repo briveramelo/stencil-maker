@@ -5,11 +5,20 @@ import svgwrite
 from src.models.models import RGBA
 
 
+def _colour_name(rgb: tuple[int, int, int], other_index: int) -> tuple[str, int]:
+    if rgb == (255, 255, 255):
+        return "white", other_index
+    if rgb == (0, 0, 0):
+        return "black", other_index
+    return f"color{other_index}", other_index + 1
+
+
 def masks_to_svgs(
     masks: Iterable,
     palette: list[RGBA],
     out_dir: Path,
-    scale: int
+    scale: int,
+    base_filename: str,
 ):
     """
     Convert each mask into an SVG where every 'true' pixel becomes a <rect>.
@@ -19,9 +28,11 @@ def masks_to_svgs(
     height, width = masks[0].shape
     size_px = (width * scale, height * scale)
 
-    for index, (mask, rgba) in enumerate(zip(masks, palette), start=1):
+    other_index = 1
+    for mask, rgba in zip(masks, palette):
+        colour_label, other_index = _colour_name(rgba[:3], other_index)
         dwg = svgwrite.Drawing(
-            filename=str(out_dir / f"layer_{index:02}.svg"),
+            filename=str(out_dir / f"{base_filename}_{colour_label}.svg"),
             size=size_px,
             viewBox=f"0 0 {width} {height}",  # avoids bloated coordinate space
         )
