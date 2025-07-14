@@ -5,10 +5,19 @@ import svgwrite
 from src.models.models import RGBA
 
 
+_COLOUR_TOLERANCE = 5
+
+
 def _colour_name(rgb: tuple[int, int, int], other_index: int) -> tuple[str, int]:
-    if rgb == (255, 255, 255):
+    """Return a human-friendly name for *rgb*.
+
+    Values close to pure white or black are labeled accordingly to make the
+    generated filenames predictable.
+    """
+
+    if all(abs(c - 255) <= _COLOUR_TOLERANCE for c in rgb):
         return "white", other_index
-    if rgb == (0, 0, 0):
+    if all(abs(c) <= _COLOUR_TOLERANCE for c in rgb):
         return "black", other_index
     return f"color{other_index}", other_index + 1
 
