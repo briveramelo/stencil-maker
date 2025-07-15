@@ -1,146 +1,167 @@
-import cv2
-import numpy as np
+"""
+Utility to convert boolean masks into minimal SVG stencil layers.
+
+Features
+--------
+* One <path> per colour layer (compound path with holes via even‑odd fill rule).
+* 4‑connected edge tracing → axis‑aligned, pixel‑perfect outlines (no diagonals).
+* No extra dependencies beyond NumPy, OpenCV, and svgwrite.
+"""
+
 from pathlib import Path
 from typing import Iterable
+import numpy as np
 import svgwrite
 
 from src.models.models import RGB, RGBA
 
 
 def masks_to_svgs(
-    masks: Iterable,
+    masks: Iterable[np.ndarray],
     rgba_palette: list[RGBA],
     out_dir: Path,
     scale: int,
     base_filename: str,
-):
+) -> None:
     """
-    Convert each mask into an SVG where every 'true' pixel becomes a <rect>.
-    A more sophisticated implementation could flood-fill contiguous pixels
-    and emit <path>s; this keeps dependencies light.
+    Export each mask as an SVG file.
+
+    Parameters
+    ----------
+    masks
+        Iterable of H×W numpy arrays with truthy pixels marking filled areas.
+    rgba_palette
+        Parallel list of RGBA tuples; only RGB is used to choose filename/fill.
+    out_dir
+        Folder where outputs are written. Created if it does not yet exist.
+    scale
+        Document pixel size in the SVG (does not change path geometry).
+    base_filename
+        Output prefix — e.g. base_white.svg, base_color1.svg, …
     """
+    masks = list(masks)  # may be a generator
+    out_dir.mkdir(parents=True, exist_ok=True)
+
     height, width = masks[0].shape
-    size_px = (width * scale, height * scale)
+    doc_px_size = (width * scale, height * scale)
 
     other_index = 1
     for mask, rgba in zip(masks, rgba_palette):
         rgb: RGB = rgba[:3]
         color_label, other_index = _get_color_name(rgb, other_index)
+
         dwg = svgwrite.Drawing(
             filename=str(out_dir / f"{base_filename}_{color_label}.svg"),
-            size=size_px,
+            size=doc_px_size,
             viewBox=f"0 0 {width} {height}",
         )
 
-        color_hex = "#%02x%02x%02x" % rgb
         path_d = _trace_contours_as_svg_paths(mask)
         if path_d:
-            dwg.add(dwg.path(d=path_d, fill=color_hex, fill_rule="evenodd"))
-
+            dwg.add(
+                dwg.path(
+                    d=path_d,
+                    fill=f"#{rgb[0]:02x}{rgb[1]:02x}{rgb[2]:02x}",
+                    fill_rule="evenodd",
+                )
+            )
         dwg.save()
 
 
-def _get_color_name(rgb: tuple[int, int, int], other_index: int) -> tuple[str, int]:
-    """Return a human-friendly name for *rgb*.
-
-    Values close to pure white or black are labeled accordingly to make the
-    generated filenames predictable.
-    """
-    color_tolerance = 10
-    if all(abs(c - 255) <= color_tolerance for c in rgb):
+def _get_color_name(rgb: RGB, other_index: int) -> tuple[str, int]:
+    """Return a predictable colour label for filenames."""
+    tol = 10
+    if all(abs(c - 255) <= tol for c in rgb):
         return "white", other_index
-    if all(abs(c) <= color_tolerance for c in rgb):
+    if all(c <= tol for c in rgb):
         return "black", other_index
     return f"color{other_index}", other_index + 1
 
 
 def _trace_contours_as_svg_paths(mask: np.ndarray) -> str:
     """
-    Convert a binary mask into a single SVG‐compatible path string.
+    Convert a binary mask into a single SVG path string (compound with holes).
 
-    The resulting path:
-      • Uses only one <path> element (compound path with “holes”).
-      • Emits commands with **spaces** (no commas) so svgwrite’s validator accepts it.
-      • Closes every contour with “Z” and relies on the even-odd fill rule.
+    Uses a custom 4‑connected border trace so that all segments are axis‑aligned
+    and lie exactly on pixel boundaries — perfect for cutters.
     """
-    # Convert mask to uint8 (0 or 255) for OpenCV
-    mask_u8 = (mask.astype(np.uint8)) * 255
-
-    # Find outer contours and holes in one pass
-    contours, hierarchy = cv2.findContours(
-        mask_u8,
-        mode=cv2.RETR_CCOMP,          # get contour hierarchy (outer + holes)
-        method=cv2.CHAIN_APPROX_NONE  # keep every pixel for pixel-perfect edges
-    )
-
-    if not contours or hierarchy is None:
+    loops = _trace_edges(mask)
+    if not loops:
         return ""
 
-    hierarchy = hierarchy[0]  # shape (N, 4): [next, prev, first_child, parent]
-    path_parts: list[str] = []
-
-    def _contour_to_path(cnt: np.ndarray) -> str:
-        """Return an SVG sub-path (“M … L … Z”) for one contour."""
-        pts = cnt.reshape(-1, 2)  # (N, 2)
-        if pts.size == 0:
-            return ""
-        pieces = [f"M {pts[0][0]} {pts[0][1]}"]
-        for x, y in pts[1:]:
-            pieces.append(f"L {x} {y}")
+    sub_paths = []
+    for loop in loops:
+        pieces = [f"M {loop[0][0]} {loop[0][1]}"]
+        pieces.extend(f"L {x} {y}" for x, y in loop[1:])
         pieces.append("Z")
-        return " ".join(pieces)
+        sub_paths.append(" ".join(pieces))
 
-    for idx, (cnt, h) in enumerate(zip(contours, hierarchy)):
-        if h[3] == -1:  # this is a top-level (outer) contour
-            # Start with the outer contour
-            sub_path = _contour_to_path(cnt)
-
-            # Append any child contours (holes) to the same compound path
-            for child_idx, h_child in enumerate(hierarchy):
-                if h_child[3] == idx:  # parent equals current outer contour
-                    sub_path += " " + _contour_to_path(contours[child_idx])
-
-            path_parts.append(sub_path)
-
-    # Combine all outer-with-holes sub-paths into one string
-    return " ".join(path_parts)
+    return " ".join(sub_paths)
 
 
-def _trace_edges(mask: np.ndarray) -> list[list[tuple[int,int]]]:
-    """Return a list of outer-with-holes polylines; each polyline is a list of (x,y) vertices on pixel *edges*."""
+def _trace_edges(mask: np.ndarray) -> list[list[tuple[int, int]]]:
+    """
+    Trace 4‑connected pixel edges and return ordered loops.
+
+    Returns a list of loops; each loop is a list of integer (x, y) vertices on
+    pixel boundaries.  Even‑odd fill handles holes automatically.
+    """
+    mask = mask.astype(bool)
     h, w = mask.shape
-    visited = set()
-    paths = []
+    adj: dict[tuple[int, int], set[tuple[int, int]]] = {}
 
-    # Helper: find the first foreground pixel that has an exposed edge
-    def find_start():
-        for y in range(h):
-            for x in range(w):
-                if mask[y, x] and (x, y, 0) not in visited:  # 0 = heading east
-                    return x, y
-        return None
+    def _add_edge(v1: tuple[int, int], v2: tuple[int, int]) -> None:
+        adj.setdefault(v1, set()).add(v2)
+        adj.setdefault(v2, set()).add(v1)
 
-    # Right-hand-rule walker
-    DIRS = [(1,0), (0,1), (-1,0), (0,-1)]  # E,S,W,N ; indices 0..3
-    while (start := find_start()) is not None:
-        x, y = start
-        dir_idx = 3  # we arrive "from the north" so we start heading east
-        path = []
+    # Build undirected graph of exposed edges
+    for y in range(h):
+        for x in range(w):
+            if not mask[y, x]:
+                continue
+            # Top edge
+            if y == 0 or not mask[y - 1, x]:
+                _add_edge((x, y), (x + 1, y))
+            # Bottom edge
+            if y == h - 1 or not mask[y + 1, x]:
+                _add_edge((x + 1, y + 1), (x, y + 1))
+            # Left edge
+            if x == 0 or not mask[y, x - 1]:
+                _add_edge((x, y + 1), (x, y))
+            # Right edge
+            if x == w - 1 or not mask[y, x + 1]:
+                _add_edge((x + 1, y), (x + 1, y + 1))
+
+    loops: list[list[tuple[int, int]]] = []
+
+    def _pop_edge(v1: tuple[int, int], v2: tuple[int, int]) -> None:
+        adj[v1].remove(v2)
+        if not adj[v1]:
+            del adj[v1]
+        adj[v2].remove(v1)
+        if not adj[v2]:
+            del adj[v2]
+
+    while adj:
+        start = next(iter(adj))
+        loop = [start]
+        prev = None
+        current = start
+
         while True:
-            path.append((x, y))
-            for i in range(4):
-                ndir = (dir_idx + 3 + i) % 4  # turn right until we see an edge
-                dx, dy = DIRS[ndir]
-                left_x, left_y = x + dx, y + dy
-                if 0 <= left_x < w and 0 <= left_y < h and mask[left_y, left_x]:
-                    # Move along the border; mark entrance direction visited
-                    visited.add((x, y, ndir))
-                    x, y = left_x, left_y
-                    dir_idx = ndir
-                    break
+            neighbors = adj[current]
+            # Deterministic selection to produce stable output
+            if prev is None:
+                next_v = sorted(neighbors)[0]
             else:
-                break  # isolated pixel
-            if (x, y) == start and dir_idx == 3:
-                break  # loop closed
-        paths.append(path)
-    return paths
+                next_v = sorted(n for n in neighbors if n != prev)[0]
+
+            _pop_edge(current, next_v)
+            prev, current = current, next_v
+            if current == start:
+                break
+            loop.append(current)
+
+        loops.append(loop)
+
+    return loops
