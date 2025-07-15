@@ -13,7 +13,7 @@ from typing import Iterable
 import numpy as np
 import svgwrite
 
-from src.models.models import RGB, RGBA
+from src.models.models import RGB, RGBA, Point, Loop
 
 
 def masks_to_svgs(
@@ -45,10 +45,11 @@ def masks_to_svgs(
     height, width = masks[0].shape
     doc_px_size = (width * scale, height * scale)
 
-    other_index = 1
+    # Index counter used to assign sequential names (color1, color2, …) to non‑white/black layers
+    special_color_index = 1
     for mask, rgba in zip(masks, rgba_palette):
         rgb: RGB = rgba[:3]
-        color_label, other_index = _get_color_name(rgb, other_index)
+        color_label, special_color_index = _get_color_name(rgb, special_color_index)
 
         dwg = svgwrite.Drawing(
             filename=str(out_dir / f"{base_filename}_{color_label}.svg"),
@@ -91,15 +92,16 @@ def _trace_contours_as_svg_paths(mask: np.ndarray) -> str:
 
     sub_paths = []
     for loop in loops:
-        pieces = [f"M {loop[0][0]} {loop[0][1]}"]
-        pieces.extend(f"L {x} {y}" for x, y in loop[1:])
-        pieces.append("Z")
+        # _add_bridges(loop, 2, .5)
+        pieces = [f"M {loop[0][0]} {loop[0][1]}"] # Begin the sub‑path with a Move‑to (M) command at the first vertex
+        pieces.extend(f"L {x} {y}" for x, y in loop[1:]) # Append Line‑to (L) commands for every remaining vertex
+        pieces.append("Z") # Close the current sub‑path (Z) to finish the loop
         sub_paths.append(" ".join(pieces))
 
     return " ".join(sub_paths)
 
 
-def _trace_edges(mask: np.ndarray) -> list[list[tuple[int, int]]]:
+def _trace_edges(mask: np.ndarray) -> list[Loop]:
     """
     Trace 4‑connected pixel edges and return ordered loops.
 
@@ -108,9 +110,13 @@ def _trace_edges(mask: np.ndarray) -> list[list[tuple[int, int]]]:
     """
     mask = mask.astype(bool)
     h, w = mask.shape
-    adj: dict[tuple[int, int], set[tuple[int, int]]] = {}
+    # represents every exposed border segment of the binary mask as an undirected graph
+    adj: dict[
+        Point, # (x, y) locations where horizontal and vertical edges meet
+        set[Point] # set of other (x, y) vertices that share a border with the key
+    ] = {}
 
-    def _add_edge(v1: tuple[int, int], v2: tuple[int, int]) -> None:
+    def _add_edge(v1: Point, v2: Point) -> None:
         adj.setdefault(v1, set()).add(v2)
         adj.setdefault(v2, set()).add(v1)
 
@@ -132,9 +138,10 @@ def _trace_edges(mask: np.ndarray) -> list[list[tuple[int, int]]]:
             if x == w - 1 or not mask[y, x + 1]:
                 _add_edge((x + 1, y), (x + 1, y + 1))
 
-    loops: list[list[tuple[int, int]]] = []
+    loops: list[Loop] = []
 
-    def _pop_edge(v1: tuple[int, int], v2: tuple[int, int]) -> None:
+    def _pop_edge(v1: Point, v2: Point) -> None:
+        """Remove the undirected edge from both vertices; delete the key if its set becomes empty"""
         adj[v1].remove(v2)
         if not adj[v1]:
             del adj[v1]
@@ -142,12 +149,14 @@ def _trace_edges(mask: np.ndarray) -> list[list[tuple[int, int]]]:
         if not adj[v2]:
             del adj[v2]
 
+    # Keep extracting loops until the adjacency graph is empty
     while adj:
         start = next(iter(adj))
         loop = [start]
         prev = None
         current = start
 
+        # Walk the adjacency graph to build a single closed loop starting and ending at 'start'
         while True:
             neighbors = adj[current]
             # Deterministic selection to produce stable output
@@ -165,3 +174,23 @@ def _trace_edges(mask: np.ndarray) -> list[list[tuple[int, int]]]:
         loops.append(loop)
 
     return loops
+
+
+def _add_bridges(loop: list[tuple[int,int]],
+                min_bridges: int = 2,
+                bridge_width: int = 1) -> list[list[tuple[int,int]]]:
+    """
+    Break the loop in `min_bridges` evenly spaced places by
+    skipping `bridge_width` pixels.
+    """
+    n = len(loop)
+    step = n // min_bridges
+    keep = []
+    i = 0
+    while i < n:
+        keep.append(loop[i])
+        # when we’re at a bridge position, skip a few vertices
+        if i % step == 0:
+            i += bridge_width
+        i += 1
+    return keep
