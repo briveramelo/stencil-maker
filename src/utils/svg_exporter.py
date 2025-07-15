@@ -1,3 +1,4 @@
+import numpy as np
 from pathlib import Path
 from typing import Iterable
 import svgwrite
@@ -27,15 +28,12 @@ def masks_to_svgs(
         dwg = svgwrite.Drawing(
             filename=str(out_dir / f"{base_filename}_{colour_label}.svg"),
             size=size_px,
-            viewBox=f"0 0 {width} {height}",  # avoids bloated coordinate space
+            viewBox=f"0 0 {width} {height}",
         )
-        # dwg.add(dwg.rect(insert=(0, 0), size=(width, height), fill="none"))  # bounding box
 
         colour_hex = "#%02x%02x%02x" % rgb
-        for y, row in enumerate(mask):
-            for x, on in enumerate(row):
-                if on:
-                    dwg.add(dwg.rect(insert=(x, y), size=(1, 1), fill=colour_hex))
+        for x, y, w, h in _find_maximal_rectangles(mask):
+            dwg.add(dwg.rect(insert=(x, y), size=(w, h), fill=colour_hex))
 
         dwg.save()
 
@@ -52,3 +50,32 @@ def _get_color_name(rgb: tuple[int, int, int], other_index: int) -> tuple[str, i
     if all(abs(c) <= color_tolerance for c in rgb):
         return "black", other_index
     return f"color{other_index}", other_index + 1
+
+
+def _find_maximal_rectangles(mask: np.ndarray) -> list[tuple[int, int, int, int]]:
+    """Find maximal rectangles in a binary mask. Returns (x, y, width, height) tuples."""
+    if mask.ndim != 2:
+        raise ValueError("Mask must be 2D")
+
+    height, width = mask.shape
+    hist = [0] * width
+    rectangles = []
+
+    for y in range(height):
+        for x in range(width):
+            hist[x] = hist[x] + 1 if mask[y, x] else 0
+
+        stack = []
+        x = 0
+        while x <= width:
+            curr_height = hist[x] if x < width else 0
+            if not stack or curr_height >= hist[stack[-1]]:
+                stack.append(x)
+                x += 1
+            else:
+                h = hist[stack.pop()]
+                w = x if not stack else x - stack[-1] - 1
+                x0 = stack[-1] + 1 if stack else 0
+                rectangles.append((x0, y - h + 1, w, h))
+
+    return rectangles
