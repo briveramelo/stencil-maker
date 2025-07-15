@@ -1,0 +1,24 @@
+[project]
+name = "stencil-maker"
+version = "0.1.0"
+description = "makes stencil svgs from pixel art .pngs"
+package-mode = false
+authors = [
+    {name = "Brandon Rivera-Melo",email = "briveramelo@gmail.com"}
+]
+license = {text = "MIT"}
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "pillow (>=11.2.1,<12.0.0)",
+    "numpy (>=2.2.6,<3.0.0)",
+    "scikit-image (>=0.25.2,<0.26.0)",
+    "svgwrite (>=1.4.3,<2.0.0)",
+    "typer[all] (>=0.16.0,<0.17.0)",
+    "scikit-learn (>=1.4.2,<2.0.0)"
+]
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
