@@ -2,29 +2,12 @@ from pathlib import Path
 from typing import Iterable
 import svgwrite
 
-from src.models.models import RGB
-
-
-_COLOUR_TOLERANCE = 10
-
-
-def _colour_name(rgb: tuple[int, int, int], other_index: int) -> tuple[str, int]:
-    """Return a human-friendly name for *rgb*.
-
-    Values close to pure white or black are labeled accordingly to make the
-    generated filenames predictable.
-    """
-
-    if all(abs(c - 255) <= _COLOUR_TOLERANCE for c in rgb):
-        return "white", other_index
-    if all(abs(c) <= _COLOUR_TOLERANCE for c in rgb):
-        return "black", other_index
-    return f"color{other_index}", other_index + 1
+from src.models.models import RGB, RGBA
 
 
 def masks_to_svgs(
     masks: Iterable,
-    palette: list[RGB],
+    rgba_palette: list[RGBA],
     out_dir: Path,
     scale: int,
     base_filename: str,
@@ -38,8 +21,9 @@ def masks_to_svgs(
     size_px = (width * scale, height * scale)
 
     other_index = 1
-    for mask, rgb in zip(masks, palette):
-        colour_label, other_index = _colour_name(rgb, other_index)
+    for mask, rgba in zip(masks, rgba_palette):
+        rgb: RGB = rgba[:3]
+        colour_label, other_index = _get_color_name(rgb, other_index)
         dwg = svgwrite.Drawing(
             filename=str(out_dir / f"{base_filename}_{colour_label}.svg"),
             size=size_px,
@@ -54,3 +38,17 @@ def masks_to_svgs(
                     dwg.add(dwg.rect(insert=(x, y), size=(1, 1), fill=colour_hex))
 
         dwg.save()
+
+
+def _get_color_name(rgb: tuple[int, int, int], other_index: int) -> tuple[str, int]:
+    """Return a human-friendly name for *rgb*.
+
+    Values close to pure white or black are labeled accordingly to make the
+    generated filenames predictable.
+    """
+    color_tolerance = 10
+    if all(abs(c - 255) <= color_tolerance for c in rgb):
+        return "white", other_index
+    if all(abs(c) <= color_tolerance for c in rgb):
+        return "black", other_index
+    return f"color{other_index}", other_index + 1
