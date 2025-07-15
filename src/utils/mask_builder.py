@@ -2,7 +2,7 @@ import numpy as np
 from PIL import Image
 
 
-def masks_from_quantized(img_q: Image.Image):
+def masks_from_quantized(img_q: Image.Image, rgba_palette):
     """Build boolean masks for each used colour index in *img_q*.
 
     Transparent pixels (alpha == 0) are excluded from all masks so that

@@ -19,12 +19,12 @@ def make_stencils(
     ensure_out_dir(output_dir)
 
     typer.secho(f"Quantizing image", fg=typer.colors.WHITE)
-    img_quant, palette = quantize_image(input_path, max_colors)
+    label_map, rgba_palette = quantize_image(input_path, max_colors)
     typer.secho(f"Creating masks", fg=typer.colors.WHITE)
-    masks = masks_from_quantized(img_quant)
+    masks = masks_from_quantized(label_map, rgba_palette)
     typer.secho(f"Creating SVGS", fg=typer.colors.WHITE)
-    masks_to_svgs(masks, palette, output_dir, scale, base_filename)
-    typer.secho(f"✅  Wrote {len(palette)} SVG layer(s) to «{output_dir}»", fg=typer.colors.GREEN)
+    masks_to_svgs(masks, rgba_palette, output_dir, scale, base_filename)
+    typer.secho(f"✅  Wrote {len(rgba_palette)} SVG layer(s) to «{output_dir}»", fg=typer.colors.GREEN)
 
 
 if __name__ == "__main__":  # pragma: no cover
