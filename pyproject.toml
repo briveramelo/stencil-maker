@@ -14,7 +14,8 @@ dependencies = [
     "numpy (>=2.2.6,<3.0.0)",
     "scikit-image (>=0.25.2,<0.26.0)",
     "svgwrite (>=1.4.3,<2.0.0)",
-    "typer[all] (>=0.16.0,<0.17.0)"
+    "typer[all] (>=0.16.0,<0.17.0)",
+    "scikit-learn (>=1.4.2,<2.0.0)"
 ]
 
 
