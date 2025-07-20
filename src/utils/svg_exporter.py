@@ -24,7 +24,10 @@ def masks_to_svgs(
     base_filename: str,
 ) -> None:
     """
-    Export each mask as an SVG file.
+    Export each mask as three SVG files using a "persian blinds" split:
+      - full: all pixels
+      - blinds1: rows 1-2, 5-6, 9-10, ...
+      - blinds2: rows 3-4, 7-8, 11-12, ...
 
     Parameters
     ----------
@@ -39,7 +42,7 @@ def masks_to_svgs(
     base_filename
         Output prefix — e.g. base_white.svg, base_color1.svg, …
     """
-    masks = list(masks)  # may be a generator
+    masks = list(masks)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     height, width = masks[0].shape
@@ -50,22 +53,37 @@ def masks_to_svgs(
         rgb: RGB = rgba[:3]
         color_label, other_index = _get_color_name(rgb, other_index)
 
-        dwg = svgwrite.Drawing(
-            filename=str(out_dir / f"{base_filename}_{color_label}.svg"),
-            size=doc_px_size,
-            viewBox=f"0 0 {width} {height}",
-        )
+        # Create three variants: full, blinds1, blinds2
+        blinds1 = np.zeros_like(mask, dtype=bool)
+        blinds2 = np.zeros_like(mask, dtype=bool)
+        # Persians blinds logic: group rows in pairs: (0,1)->blinds1, (2,3)->blinds2, (4,5)->blinds1, ...
+        for row in range(height):
+            if mask[row].any():
+                block = (row // 2) % 2
+                if block == 0:
+                    blinds1[row, :] = mask[row, :]
+                else:
+                    blinds2[row, :] = mask[row, :]
 
-        path_d = _trace_contours_as_svg_paths(mask)
-        if path_d:
-            dwg.add(
-                dwg.path(
-                    d=path_d,
-                    fill=f"#{rgb[0]:02x}{rgb[1]:02x}{rgb[2]:02x}",
-                    fill_rule="evenodd",
-                )
+        variants = [("full", mask), ("blinds1", blinds1), ("blinds2", blinds2)]
+
+        for suffix, variant in variants:
+            dwg = svgwrite.Drawing(
+                filename=str(out_dir / f"{base_filename}_{color_label}_{suffix}.svg"),
+                size=doc_px_size,
+                viewBox=f"0 0 {width} {height}",
             )
-        dwg.save()
+
+            path_d = _trace_contours_as_svg_paths(variant)
+            if path_d:
+                dwg.add(
+                    dwg.path(
+                        d=path_d,
+                        fill=f"#{rgb[0]:02x}{rgb[1]:02x}{rgb[2]:02x}",
+                        fill_rule="evenodd",
+                    )
+                )
+            dwg.save()
 
 
 def _get_color_name(rgb: RGB, other_index: int) -> tuple[str, int]:
