@@ -221,6 +221,135 @@ def _make_bridges(loop: Loop, img_w: int, img_h: int, span: float = 2.0, half_th
     return bridges
 
 # ----------------------------------------------------------------------
+#  Background‑island detection (stencil material not connected to border)
+# ----------------------------------------------------------------------
+def _find_stencil_islands(mask: np.ndarray) -> list[tuple[int, int, int, int]]:
+    """
+    Return a list of bounding‑boxes for *stencil material* regions (i.e.
+    False pixels in *mask*) that are **not** connected to the image border.
+    Each item is a tuple ``(min_x, max_x, min_y, max_y)`` describing the
+    island’s extents in pixel coordinates.
+
+    These “negative‑space islands” would otherwise fall out of the stencil
+    when the surrounding paint areas are removed, because they are not
+    represented by individual border loops.
+    """
+    h, w = mask.shape
+    visited = np.zeros((h, w), dtype=bool)
+    islands: list[tuple[int, int, int, int]] = []
+
+    from collections import deque
+
+    for y in range(h):
+        for x in range(w):
+            # Skip paint pixels or anything already examined
+            if mask[y, x] or visited[y, x]:
+                continue
+
+            # Flood‑fill the background component
+            q = deque([(y, x)])
+            visited[y, x] = True
+            is_border = False
+            min_x = max_x = x
+            min_y = max_y = y
+
+            while q:
+                cy, cx = q.popleft()
+
+                # Track bounding box
+                if cx < min_x:
+                    min_x = cx
+                if cx > max_x:
+                    max_x = cx
+                if cy < min_y:
+                    min_y = cy
+                if cy > max_y:
+                    max_y = cy
+
+                # Touching the outer image frame?  Then it’s *not* an island.
+                if cy == 0 or cy == h - 1 or cx == 0 or cx == w - 1:
+                    is_border = True
+
+                for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                    ny, nx = cy + dy, cx + dx
+                    if (
+                        0 <= ny < h
+                        and 0 <= nx < w
+                        and not visited[ny, nx]
+                        and not mask[ny, nx]
+                    ):
+                        visited[ny, nx] = True
+                        q.append((ny, nx))
+
+            if not is_border:
+                islands.append((min_x, max_x, min_y, max_y))
+
+    return islands
+
+
+def _make_bridges_for_island(
+    bbox: tuple[int, int, int, int],
+    span: float = 2.0,
+    half_thickness: float = 0.5,
+) -> list[str]:
+    """
+    Construct two small rectangular bridge sub‑paths (left & right) for a
+    negative‑space *island* given by *bbox* = ``(min_x, max_x, min_y, max_y)``.
+    The output format mirrors `_make_bridges`, so the caller can simply extend
+    its sub‑path list.
+    """
+    min_x, max_x, min_y, max_y = bbox
+    y_mid = (min_y + max_y) / 2
+
+    # Left bridge
+    left = " ".join(
+        [
+            f"M {min_x} {y_mid - half_thickness}",
+            f"L {min_x - span} {y_mid - half_thickness}",
+            f"L {min_x - span} {y_mid + half_thickness}",
+            f"L {min_x} {y_mid + half_thickness}",
+            "Z",
+        ]
+    )
+
+    # Right bridge
+    right = " ".join(
+        [
+            f"M {max_x} {y_mid - half_thickness}",
+            f"L {max_x + span} {y_mid - half_thickness}",
+            f"L {max_x + span} {y_mid + half_thickness}",
+            f"L {max_x} {y_mid + half_thickness}",
+            "Z",
+        ]
+    )
+
+    return [left, right]
+
+
+def _compute_loop_depths(loops: list[Loop]) -> list[int]:
+    """
+    For every loop, count how many *other* loops contain a point inside it.
+    The count is the nesting depth:
+        0 → outermost outline
+        1 → simple hole
+        2 → island inside that hole
+        …
+    """
+    depths: list[int] = []
+    for i, loop in enumerate(loops):
+        # Use polygon centroid as a guaranteed interior point
+        xs, ys = zip(*loop)
+        cx = sum(xs) / len(xs)
+        cy = sum(ys) / len(ys)
+        depth = sum(
+            1 for j, other in enumerate(loops)
+            if j != i and _point_in_loop((cx, cy), other)
+        )
+        depths.append(depth)
+    return depths
+
+
+# ----------------------------------------------------------------------
 #  Polygon utilities for “island” detection
 # ----------------------------------------------------------------------
 def _point_in_loop(pt: tuple[float, float], loop: Loop) -> bool:
@@ -241,28 +370,6 @@ def _point_in_loop(pt: tuple[float, float], loop: Loop) -> bool:
     return inside
 
 
-def _compute_loop_depths(loops: list[Loop]) -> list[int]:
-    """
-    For every loop, count how many *other* loops contain a point inside it.
-    The count is the nesting depth:
-        0 → outermost outline
-        1 → simple hole
-        2 → island inside that hole
-        …
-    """
-    depths: list[int] = []
-    for i, loop in enumerate(loops):
-        # Use polygon centroid as a guaranteed interior point
-        xs, ys = zip(*loop)
-        cx = sum(xs) / len(xs)
-        cy = sum(ys) / len(ys)
-        depth = sum(
-            1 for j, other in enumerate(loops) if j != i and _point_in_loop((cx, cy), other)
-        )
-        depths.append(depth)
-    return depths
-
-
 def _trace_contours_as_svg_paths(mask: np.ndarray) -> str:
     """
     Convert a binary mask into a single SVG path string (compound with holes).
@@ -276,6 +383,7 @@ def _trace_contours_as_svg_paths(mask: np.ndarray) -> str:
     if not loops:
         return ""
 
+    bridge_span = 1
     sub_paths = []
     for loop, depth in zip(loops, depths):
         pieces = [f"M {loop[0][0]} {loop[0][1]}"] # Begin the sub‑path with a Move‑to (M) command at the first vertex
@@ -283,10 +391,21 @@ def _trace_contours_as_svg_paths(mask: np.ndarray) -> str:
         pieces.append("Z") # Close the current sub‑path (Z) to finish the loop
         sub_paths.append(" ".join(pieces))
 
-        # Add bridges **only** when loop is an “island”
-        # (even nesting depth ≥ 2 ⇒ filled region inside a hole)
+        # Add bridges when the loop encloses *material* that would otherwise fall out
+        # In practice, that’s any loop whose nesting depth is *odd* (0‑based):
+        #   depth 0 → outer boundary of paint cut‑out
+        #   depth 1 → first “island” of stencil material (needs tether)
+        #   depth 2 → hole inside that island (paint again) …
         if depth >= 2 and depth % 2 == 0:
-            bridges = _make_bridges(loop, w, h, span=1, half_thickness=0.25)
-            sub_paths.extend(bridges)
+            bridges = _make_bridges(loop, w, h, span=bridge_span, half_thickness=0.25)
+            # sub_paths.extend(bridges)
+
+    # ------------------------------------------------------------------
+    #  Additional bridges for “orphan” stencil islands not covered above
+    # ------------------------------------------------------------------
+    islands = _find_stencil_islands(mask)
+    for bbox in islands:
+        bridges = _make_bridges_for_island(bbox, span=bridge_span, half_thickness=0.25)
+        # sub_paths.extend(bridges)
 
     return " ".join(sub_paths)
