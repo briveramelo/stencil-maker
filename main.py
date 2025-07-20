@@ -48,3 +48,4 @@ if __name__ == "__main__":  # pragma: no cover
         total += 1
 
     typer.secho(f"✅ Converted {total} PNGS -> SVGs", fg=typer.colors.GREEN, bold=True)
+
