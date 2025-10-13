@@ -11,6 +11,7 @@ Features
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Sequence
+import math
 import numpy as np
 import svgwrite
 
@@ -31,6 +32,26 @@ class AlignmentCutConfig:
         return self.height + self.thickness
 
 
+@dataclass(frozen=True)
+class CompositeGridConfig:
+    """Configuration for composite SVG grids that merge blinds outputs."""
+
+    columns: int
+
+    def __post_init__(self) -> None:
+        if self.columns <= 0:
+            msg = "columns must be ≥ 1 for CompositeGridConfig"
+            raise ValueError(msg)
+
+
+@dataclass
+class _CompositeCell:
+    """In-memory representation of a single cell in the composite grid."""
+
+    loops: list[list[tuple[float, float]]]
+    rgb: RGB
+
+
 def masks_to_svgs(
     masks: Iterable[np.ndarray],
     rgba_palette: list[RGBA],
@@ -38,6 +59,7 @@ def masks_to_svgs(
     scale: int,
     base_filename: str,
     alignment_cuts: AlignmentCutConfig | None = None,
+    composite_grid: CompositeGridConfig | None = None,
 ) -> None:
     """
     Export each mask as three SVG files using a "persian blinds" split:
@@ -57,6 +79,9 @@ def masks_to_svgs(
         Document pixel size in the SVG (does not change path geometry).
     base_filename
         Output prefix — e.g. base_white.svg, base_color1.svg, …
+    composite_grid
+        Optional grid specification to write composite SVGs that combine the
+        blinds outputs for every mask.
     """
     masks = list(masks)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -66,6 +91,12 @@ def masks_to_svgs(
     doc_width = width + 2 * padding
     doc_height = height + 2 * padding
     doc_px_size = (doc_width * scale, doc_height * scale)
+
+    composite_cells: dict[str, list[_CompositeCell]] | None
+    if composite_grid:
+        composite_cells = {"blinds1": [], "blinds2": []}
+    else:
+        composite_cells = None
 
     other_index = 1
     for mask, rgba in zip(masks, rgba_palette):
@@ -96,6 +127,11 @@ def masks_to_svgs(
             loops = _offset_loops(
                 _trace_contours_as_loops(variant), padding, padding
             )
+            if composite_cells is not None and suffix in composite_cells:
+                loops_copy = [loop.copy() for loop in loops]
+                composite_cells[suffix].append(
+                    _CompositeCell(loops=loops_copy, rgb=rgb)
+                )
             alignment_loops: Sequence[Sequence[tuple[float, float]]]
             if alignment_cuts:
                 alignment_loops = _alignment_cut_loops(
@@ -117,6 +153,82 @@ def masks_to_svgs(
                     )
                 )
             dwg.save()
+
+    if composite_grid and composite_cells is not None:
+        _write_composite_svgs(
+            composite_cells,
+            doc_width,
+            doc_height,
+            scale,
+            out_dir,
+            base_filename,
+            composite_grid,
+        )
+
+
+def _write_composite_svgs(
+    cells_by_suffix: dict[str, list[_CompositeCell]],
+    cell_width: float,
+    cell_height: float,
+    scale: int,
+    out_dir: Path,
+    base_filename: str,
+    grid_config: CompositeGridConfig,
+) -> None:
+    """Write composite SVGs that arrange blinds outputs on a fixed grid."""
+
+    columns = grid_config.columns
+    for suffix, cells in cells_by_suffix.items():
+        if not cells:
+            continue
+
+        total_cells = len(cells)
+        rows = math.ceil(total_cells / columns)
+        total_width = columns * cell_width
+        total_height = rows * cell_height
+        doc_px_size = (total_width * scale, total_height * scale)
+
+        dwg = svgwrite.Drawing(
+            filename=str(out_dir / f"{base_filename}_{suffix}_composite.svg"),
+            size=doc_px_size,
+            viewBox=f"0 0 {total_width} {total_height}",
+        )
+
+        for index, cell in enumerate(cells):
+            row = index // columns
+            col = index % columns
+            offset_x = col * cell_width
+            offset_y = row * cell_height
+
+            if not cell.loops:
+                continue
+
+            loops = _offset_loops(cell.loops, offset_x, offset_y)
+            if not loops:
+                continue
+
+            path_d = _loops_to_svg_path(loops)
+            if not path_d:
+                continue
+
+            rgb = cell.rgb
+            dwg.add(
+                dwg.path(
+                    d=path_d,
+                    fill=f"#{rgb[0]:02x}{rgb[1]:02x}{rgb[2]:02x}",
+                    fill_rule="evenodd",
+                )
+            )
+
+        stroke_kwargs = {"stroke": "#000000", "stroke_width": 0, "fill": "none"}
+        for col in range(columns + 1):
+            x = col * cell_width
+            dwg.add(dwg.line(start=(x, 0), end=(x, total_height), **stroke_kwargs))
+        for row in range(rows + 1):
+            y = row * cell_height
+            dwg.add(dwg.line(start=(0, y), end=(total_width, y), **stroke_kwargs))
+
+        dwg.save()
 
 
 def _get_color_name(rgb: RGB, other_index: int) -> tuple[str, int]:
