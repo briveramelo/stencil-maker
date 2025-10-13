@@ -2,7 +2,7 @@ from pathlib import Path
 import typer
 from src.utils.color_quantizer import quantize_image
 from src.utils.mask_builder import masks_from_quantized
-from src.utils.svg_exporter import masks_to_svgs
+from src.utils.svg_exporter import AlignmentCutConfig, masks_to_svgs
 from src.utils.utils import ensure_out_dir
 from src.models import POKEMON_NAMES
 
@@ -23,7 +23,15 @@ def make_stencils(
     typer.secho(f"Creating masks", fg=typer.colors.WHITE)
     masks = masks_from_quantized(label_map, rgba_palette)
     typer.secho(f"Creating SVGS", fg=typer.colors.WHITE)
-    masks_to_svgs(masks, rgba_palette, output_dir, scale, base_filename)
+    alignment_cuts = AlignmentCutConfig(height=20, thickness=4)
+    masks_to_svgs(
+        masks,
+        rgba_palette,
+        output_dir,
+        scale,
+        base_filename,
+        alignment_cuts=alignment_cuts,
+    )
     typer.secho(f"✅  Wrote {len(rgba_palette)} SVG layer(s) to «{output_dir}»", fg=typer.colors.GREEN)
 
 

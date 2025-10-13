@@ -8,12 +8,27 @@ Features
 * No extra dependencies beyond NumPy, OpenCV, and svgwrite.
 """
 
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Sequence
 import numpy as np
 import svgwrite
 
 from src.models.models import RGB, RGBA
+
+
+@dataclass(frozen=True)
+class AlignmentCutConfig:
+    """Configuration for «+»-shaped alignment cuts."""
+
+    height: float
+    thickness: float
+
+    @property
+    def padding(self) -> float:
+        """Extra canvas padding required to fit the cut fully outside the art."""
+
+        return self.height + self.thickness
 
 
 def masks_to_svgs(
@@ -22,6 +37,7 @@ def masks_to_svgs(
     out_dir: Path,
     scale: int,
     base_filename: str,
+    alignment_cuts: AlignmentCutConfig | None = None,
 ) -> None:
     """
     Export each mask as three SVG files using a "persian blinds" split:
@@ -46,7 +62,10 @@ def masks_to_svgs(
     out_dir.mkdir(parents=True, exist_ok=True)
 
     height, width = masks[0].shape
-    doc_px_size = (width * scale, height * scale)
+    padding = alignment_cuts.padding if alignment_cuts else 0.0
+    doc_width = width + 2 * padding
+    doc_height = height + 2 * padding
+    doc_px_size = (doc_width * scale, doc_height * scale)
 
     other_index = 1
     for mask, rgba in zip(masks, rgba_palette):
@@ -71,11 +90,25 @@ def masks_to_svgs(
             dwg = svgwrite.Drawing(
                 filename=str(out_dir / f"{base_filename}_{color_label}_{suffix}.svg"),
                 size=doc_px_size,
-                viewBox=f"0 0 {width} {height}",
+                viewBox=f"0 0 {doc_width} {doc_height}",
             )
 
-            path_d = _trace_contours_as_svg_paths(variant)
-            if path_d:
+            loops = _offset_loops(
+                _trace_contours_as_loops(variant), padding, padding
+            )
+            alignment_loops: Sequence[Sequence[tuple[float, float]]]
+            if alignment_cuts:
+                alignment_loops = _alignment_cut_loops(
+                    alignment_cuts, width, height, padding
+                )
+            else:
+                alignment_loops = []
+
+            all_loops: list[Sequence[tuple[float, float]]] = list(loops)
+            all_loops.extend(alignment_loops)
+
+            if all_loops:
+                path_d = _loops_to_svg_path(all_loops)
                 dwg.add(
                     dwg.path(
                         d=path_d,
@@ -96,25 +129,82 @@ def _get_color_name(rgb: RGB, other_index: int) -> tuple[str, int]:
     return f"color{other_index}", other_index + 1
 
 
-def _trace_contours_as_svg_paths(mask: np.ndarray) -> str:
-    """
-    Convert a binary mask into a single SVG path string (compound with holes).
+def _trace_contours_as_loops(mask: np.ndarray) -> list[list[tuple[int, int]]]:
+    """Convert a binary mask into ordered loops describing its borders."""
 
-    Uses a custom 4‑connected border trace so that all segments are axis‑aligned
-    and lie exactly on pixel boundaries — perfect for cutters.
-    """
-    loops = _trace_edges(mask)
-    if not loops:
-        return ""
+    return _trace_edges(mask)
 
-    sub_paths = []
+
+def _offset_loops(
+    loops: Iterable[Iterable[tuple[int, int]]],
+    offset_x: float,
+    offset_y: float,
+) -> list[list[tuple[float, float]]]:
+    """Translate every vertex in *loops* by the provided offsets."""
+
+    translated: list[list[tuple[float, float]]] = []
     for loop in loops:
-        pieces = [f"M {loop[0][0]} {loop[0][1]}"]
-        pieces.extend(f"L {x} {y}" for x, y in loop[1:])
+        translated.append([(x + offset_x, y + offset_y) for x, y in loop])
+    return translated
+
+
+def _loops_to_svg_path(loops: Iterable[Sequence[tuple[float, float]]]) -> str:
+    """Convert vertex loops into a single SVG path string."""
+
+    sub_paths: list[str] = []
+    for loop in loops:
+        points = list(loop)
+        if not points:
+            continue
+        pieces = [f"M {points[0][0]} {points[0][1]}"]
+        pieces.extend(f"L {x} {y}" for x, y in points[1:])
         pieces.append("Z")
         sub_paths.append(" ".join(pieces))
-
     return " ".join(sub_paths)
+
+
+def _alignment_cut_loops(
+    config: AlignmentCutConfig,
+    width: int,
+    height: int,
+    padding: float,
+) -> list[list[tuple[float, float]]]:
+    """Return loops describing «+»-shaped alignment cuts around the stencil."""
+
+    if config.height <= 0 or config.thickness <= 0:
+        return []
+
+    half_height = config.height / 2
+    half_thickness = config.thickness / 2
+    offset = half_height + half_thickness
+
+    centers = [
+        (padding - offset, padding - offset),  # top-left
+        (padding + width + offset, padding - offset),  # top-right
+        (padding - offset, padding + height + offset),  # bottom-left
+        (padding + width + offset, padding + height + offset),  # bottom-right
+    ]
+
+    loops: list[list[tuple[float, float]]] = []
+    for cx, cy in centers:
+        loops.append(
+            [
+                (cx - half_thickness, cy - half_height),
+                (cx + half_thickness, cy - half_height),
+                (cx + half_thickness, cy - half_thickness),
+                (cx + half_height, cy - half_thickness),
+                (cx + half_height, cy + half_thickness),
+                (cx + half_thickness, cy + half_thickness),
+                (cx + half_thickness, cy + half_height),
+                (cx - half_thickness, cy + half_height),
+                (cx - half_thickness, cy + half_thickness),
+                (cx - half_height, cy + half_thickness),
+                (cx - half_height, cy - half_thickness),
+                (cx - half_thickness, cy - half_thickness),
+            ]
+        )
+
+    return loops
 
 
 def _trace_edges(mask: np.ndarray) -> list[list[tuple[int, int]]]:
