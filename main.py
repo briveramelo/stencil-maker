@@ -2,7 +2,11 @@ from pathlib import Path
 import typer
 from src.utils.color_quantizer import quantize_image
 from src.utils.mask_builder import masks_from_quantized
-from src.utils.svg_exporter import AlignmentCutConfig, masks_to_svgs
+from src.utils.svg_exporter import (
+    AlignmentCutConfig,
+    CompositeGridConfig,
+    masks_to_svgs,
+)
 from src.utils.utils import ensure_out_dir
 from src.models import POKEMON_NAMES
 
@@ -14,6 +18,9 @@ def make_stencils(
     base_filename: str,
     max_colors: int,
     scale: int,
+    composite_rows: int = 2,
+    composite_cols: int = 2,
+    composite_stroke_width: float = 0.1,
 ):
     """Convert *input_path* PNG into ≤ *max_colors* SVG layers in *output_dir*."""
     ensure_out_dir(output_dir)
@@ -24,6 +31,15 @@ def make_stencils(
     masks = masks_from_quantized(label_map, rgba_palette)
     typer.secho(f"Creating SVGS", fg=typer.colors.WHITE)
     alignment_cuts = AlignmentCutConfig(height=20, thickness=4)
+    if composite_rows <= 0 or composite_cols <= 0:
+        raise ValueError("composite_rows and composite_cols must be positive")
+
+    composite_grid = CompositeGridConfig(
+        rows=composite_rows,
+        cols=composite_cols,
+        stroke_width=composite_stroke_width,
+    )
+
     masks_to_svgs(
         masks,
         rgba_palette,
@@ -31,6 +47,7 @@ def make_stencils(
         scale,
         base_filename,
         alignment_cuts=alignment_cuts,
+        composite_grid=composite_grid,
     )
     typer.secho(f"✅  Wrote {len(rgba_palette)} SVG layer(s) to «{output_dir}»", fg=typer.colors.GREEN)
 

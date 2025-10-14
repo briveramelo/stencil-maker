@@ -31,6 +31,23 @@ class AlignmentCutConfig:
         return self.height + self.thickness
 
 
+@dataclass(frozen=True)
+class CompositeGridConfig:
+    """Configuration describing how blinds variants are tiled into a grid."""
+
+    rows: int
+    cols: int
+    stroke_width: float = 0.1
+
+    def __post_init__(self) -> None:
+        if self.rows <= 0:
+            raise ValueError("CompositeGridConfig.rows must be positive")
+        if self.cols <= 0:
+            raise ValueError("CompositeGridConfig.cols must be positive")
+        if self.stroke_width <= 0:
+            raise ValueError("CompositeGridConfig.stroke_width must be positive")
+
+
 def masks_to_svgs(
     masks: Iterable[np.ndarray],
     rgba_palette: list[RGBA],
@@ -38,6 +55,7 @@ def masks_to_svgs(
     scale: int,
     base_filename: str,
     alignment_cuts: AlignmentCutConfig | None = None,
+    composite_grid: CompositeGridConfig | None = None,
 ) -> None:
     """
     Export each mask as three SVG files using a "persian blinds" split:
@@ -57,6 +75,9 @@ def masks_to_svgs(
         Document pixel size in the SVG (does not change path geometry).
     base_filename
         Output prefix — e.g. base_white.svg, base_color1.svg, …
+    composite_grid
+        When provided, create additional «_composite» files for blinds variants
+        laid out in a *rows*×*cols* grid with thin divider lines.
     """
     masks = list(masks)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -68,6 +89,9 @@ def masks_to_svgs(
     doc_px_size = (doc_width * scale, doc_height * scale)
 
     other_index = 1
+    composite_sources: dict[
+        str, list[tuple[Sequence[Sequence[tuple[float, float]]], RGB]]
+    ] = {}
     for mask, rgba in zip(masks, rgba_palette):
         rgb: RGB = rgba[:3]
         color_label, other_index = _get_color_name(rgb, other_index)
@@ -117,6 +141,23 @@ def masks_to_svgs(
                     )
                 )
             dwg.save()
+
+            if composite_grid and suffix.startswith("blinds"):
+                stored_loops: list[Sequence[tuple[float, float]]] = [
+                    tuple(loop) for loop in loops
+                ]
+                composite_sources.setdefault(suffix, []).append((stored_loops, rgb))
+
+    if composite_grid and composite_sources:
+        _write_composite_svgs(
+            composite_sources,
+            out_dir,
+            base_filename,
+            doc_width,
+            doc_height,
+            scale,
+            composite_grid,
+        )
 
 
 def _get_color_name(rgb: RGB, other_index: int) -> tuple[str, int]:
@@ -205,6 +246,91 @@ def _alignment_cut_loops(
         )
 
     return loops
+
+
+def _write_composite_svgs(
+    composites: dict[str, list[tuple[Sequence[Sequence[tuple[float, float]]], RGB]]],
+    out_dir: Path,
+    base_filename: str,
+    cell_width: float,
+    cell_height: float,
+    scale: int,
+    grid: CompositeGridConfig,
+) -> None:
+    """Write composite SVGs that tile blinds variants into a grid."""
+
+    total_cells = grid.rows * grid.cols
+
+    for suffix, entries in composites.items():
+        if not entries:
+            continue
+        if len(entries) > total_cells:
+            raise ValueError(
+                "Composite grid %dx%d is too small for %d layers"
+                % (grid.rows, grid.cols, len(entries))
+            )
+
+        comp_width = cell_width * grid.cols
+        comp_height = cell_height * grid.rows
+        comp_px_size = (comp_width * scale, comp_height * scale)
+
+        dwg = svgwrite.Drawing(
+            filename=str(out_dir / f"{base_filename}_{suffix}_composite.svg"),
+            size=comp_px_size,
+            viewBox=f"0 0 {comp_width} {comp_height}",
+        )
+
+        # Draw outer border
+        dwg.add(
+            dwg.rect(
+                insert=(0, 0),
+                size=(comp_width, comp_height),
+                fill="none",
+                stroke="#000000",
+                stroke_width=grid.stroke_width,
+            )
+        )
+
+        # Draw internal grid lines
+        for col in range(1, grid.cols):
+            x = col * cell_width
+            dwg.add(
+                dwg.line(
+                    start=(x, 0),
+                    end=(x, comp_height),
+                    stroke="#000000",
+                    stroke_width=grid.stroke_width,
+                )
+            )
+        for row in range(1, grid.rows):
+            y = row * cell_height
+            dwg.add(
+                dwg.line(
+                    start=(0, y),
+                    end=(comp_width, y),
+                    stroke="#000000",
+                    stroke_width=grid.stroke_width,
+                )
+            )
+
+        for index, (loops, rgb) in enumerate(entries):
+            row = index // grid.cols
+            col = index % grid.cols
+            offset_x = col * cell_width
+            offset_y = row * cell_height
+            translated = _offset_loops(loops, offset_x, offset_y)
+            if not translated:
+                continue
+            path_d = _loops_to_svg_path(translated)
+            dwg.add(
+                dwg.path(
+                    d=path_d,
+                    fill=f"#{rgb[0]:02x}{rgb[1]:02x}{rgb[2]:02x}",
+                    fill_rule="evenodd",
+                )
+            )
+
+        dwg.save()
 
 
 def _trace_edges(mask: np.ndarray) -> list[list[tuple[int, int]]]:
